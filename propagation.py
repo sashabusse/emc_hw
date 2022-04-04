@@ -1,6 +1,7 @@
 import numpy as np
 import units_convertion as uconv
 from matplotlib import pyplot as plt
+from scipy.integrate import quad
 
 
 def free_space_loss(lamb, R):
@@ -84,21 +85,24 @@ def point2line_distance(lx1, ly1, lx2, ly2, px, py):
     return S/l
 
 
-def re_refraction(refraction):
-    Re0 = 6800e3
+def re_refraction(refraction, print_en=False):
+    Re0 = 6371e3
     Re_eq = Re0/(1+Re0*refraction/2)
+    if print_en:
+        print("Earth radius equivalent calculation:")
+        print("\tRe_eq={} km".format(Re_eq*1e-3))
     return Re_eq
 
 
-def track_earth_lvl(Rt, refraction):
-    Re_eq = re_refraction(refraction)
+def track_earth_lvl(Rt, refraction, print_en=False):
+    Re_eq = re_refraction(refraction, print_en)
     R0 = Rt[-1]
     y0 = (R0**2)/(2*Re_eq)*(Rt/R0)*(1-Rt/R0)
     return y0
 
 
-def track_clearance(Rt, yt, H_tx, H_rx, refraction):
-    y0 = track_earth_lvl(Rt, refraction)
+def track_clearance(Rt, yt, H_tx, H_rx, refraction, print_en=False):
+    y0 = track_earth_lvl(Rt, refraction, print_en)
     y = y0 + yt
     y_tx = y[0] + H_tx
     y_rx = y[-1] + H_rx
@@ -123,14 +127,16 @@ def plot_clearance(Rt, y, y_tx, y_rx, h_clr, refraction):
     for i in range(Rt.size):
         plt.text(Rt[i], y[i], '{:.2f}'.format(h_clr[i]))
 
+    plt.xlabel('Rt м')
+    plt.ylabel('h м')
     plt.grid(True)
     plt.legend()
 
 
-def V_interf_attenuation_db(PHI, g, f, R0, R_clr, H_clr, print_en=False):
+def V_interf_attenuation_db(PHI, refraction, f, R0, R_clr, H_clr, print_en=False):
     k = R_clr/R0
     H0 = np.sqrt(R0*uconv.f2lamb(f)*k*(1-k)/3)
-    dH = -(R0**2)*g*k*(1-k)/4
+    dH = -(R0**2)*refraction*k*(1-k)/4
     p = (H_clr+dH)/H0
     V = np.sqrt(1 + (PHI**2) - 2*PHI*np.cos(np.pi*(p**2)/3))
 
@@ -143,3 +149,55 @@ def V_interf_attenuation_db(PHI, g, f, R0, R_clr, H_clr, print_en=False):
 
     return V
 
+
+def optical_spiral(v):
+    a = quad(lambda x: np.cos(np.pi*(x**2)/2), 0, v)[0]
+    b = quad(lambda x: np.sin(np.pi*(x**2)/2), 0, v)[0]
+
+    return (0.5 + a)/np.sqrt(2), (0.5 + b)/np.sqrt(2)
+
+
+def normalized_clearance(H, R1, R2, lamb):
+    return H*np.sqrt(2*(R1+R2)/R1/R2)
+
+
+def obstacle_attenuation_curve_db(u):
+    P = np.zeros(u.size)
+    for i in range(u.size):
+        a, b = optical_spiral(u[i])
+        P[i] = (np.abs(a)**2 + np.abs(b**2))
+
+    return uconv.P2db(P)
+
+
+def obstacles_attenuation_db(R, h, lamb, print_en=False):
+    if print_en:
+        print("calculating attenuation on obstacles:")
+
+    res = 0
+    for i in range(1, R.size-1):
+        hl = h[i-1] + (h[i+1] - h[i-1]) * (R[i]-R[i-1])/(R[i+1]-R[i-1])
+        H = hl-h[i]
+        R1 = R[i]-R[i-1]
+        R2 = R[i+1]-R[i]
+        norm_clr = normalized_clearance(H, R1, R2, lamb)
+        attenuation_db = obstacle_attenuation_curve_db(np.array(
+            [norm_clr]
+        ))
+        res += attenuation_db
+        if print_en:
+            print("\t {}th obstacle:".format(i))
+            print("\t\tH = {}".format(H))
+            print("\t\tR1 = {}".format(R1))
+            print("\t\tR2 = {}".format(R2))
+            print("\t\tnormalized clearance = {}".format(norm_clr))
+            print("\t\tattenuation = {} dB".format(attenuation_db))
+            print()
+
+    print("total attenuation = {} dB".format(res))
+    return res
+
+
+def obstacles_H0_attenuation_db(R0, R1, R2, R3):
+    V = np.abs(0.5*(1-np.arctan(np.sqrt(R2*R0/R1/R3))/np.pi))
+    return uconv.P2db(V)
